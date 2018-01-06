@@ -1,119 +1,109 @@
 # -*- coding:utf-8 -*-
 
 import requests
-from requests import RequestException
-from bs4 import BeautifulSoup
 import re
 import time
-from random import randrange
-import threading
-import os
-from concurrent.futures import ThreadPoolExecutor
+import random
+import sys
+from Agents import user_agents
+from bs4 import BeautifulSoup
+from pymongo import MongoClient
+from requests.exceptions import RequestException
 
 
-site_url = 'http://cl.nd77.pw/'
-base_url = 'http://cl.nd77.pw/thread0806.php?fid=8&search=&page='
+class Spider:
+    def __init__(self):
+        self.client = MongoClient()
+        self.db = self.client['magnet-link']
+        self.link = self.db['link']
+        self.seed = self.db['seed']
+        self.base_url = 'http://www.javbus84.com/liuyi/julia_1.html'
+        self.pages = 34
+        self.header = random.choice(user_agents)
 
-headers = {
-    'User-Agent': 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:57.0) Gecko/20100101 Firefox/57.0'
-}
+    def get_html(self, url):
+        try:
+            r = requests.get(url, self.header, timeout=5)
 
+            if r.status_code == 200:
+                r.encoding = r.apparent_encoding
+                return r.text
+            else:
+                print 'bad request, error code:', r.status_code
+                return
+        except RequestException as e:
+            print e.message
 
-def getsublink(url):
-    link_list = {}
-    response = requests.get(url, headers=headers)
+    def get_sublink(self, html):
 
-    try:
-        response.encoding = response.apparent_encoding      #
-        soup = BeautifulSoup(response.text, 'lxml')
-    except requests.exceptions.ConnectionError:
-        pass
-
-    url_pattern = 'htm_data.*html'
-    title_pattern = '\">.*</a'
-    re.compile(url_pattern)
-    re.compile(title_pattern)
-
-    for tp in soup.select('tr'):
-
-        # if u'美' in tp.text:
-        for raw_link in tp.select('h3'):
+        soup = BeautifulSoup(html, 'lxml')
+        data = soup.select('.row')
+        print soup.select('div')
+        for item in data:
+            # print item
             try:
-                titles = re.search(title_pattern, str(raw_link))
-                urls = re.search(url_pattern, str(raw_link))
-                link_list[titles.group().strip(
-                    '\">').strip('</a')] = urls.group()
+                pattern = re.compile('href="(.*)" target=.*?title="(.*)">')
+                if len(re.findall(pattern, str(item))) > 0:
+                    url, title = re.findall(pattern, str(item))[0]
+                    size = re.search('size">(.*)<', str(item)).group()
+                    post = {
+                        'url': url,
+                        'title': title,
+                        'size': size
+                    }
+                    print 'saving link', url
+                    if not self.link.find_one({'url': url}):
+                        self.link.save(post)
+                    else:
+                        print 'link exists, pass'
 
-            except AttributeError:
-                pass
+            except AttributeError as e:
+                print e
 
-    return link_list
-
-
-def getimglink(link_list):
-    for title in link_list:
-        url = site_url + link_list[title]
-        img_url = []
-        print 'current url', url
+    def get_magnet(self, link):
+        header = random.choice(user_agents)
 
         try:
-            response = requests.get(url, headers=headers, timeout=5)
-            soup = BeautifulSoup(response.text, 'lxml')
-        except requests.exceptions.ConnectionError:
-            pass
+            r = requests.get(link['url'], header, timeout=5)
+            if r.status_code == 200:
+                r.encoding = r.apparent_encoding
+                soup = BeautifulSoup(r.text, 'lxml')
 
-        for item in soup.select('input'):
-            try:
-                pattern = 'src=".*jpg'
-                re.compile(pattern)
-                img_src = re.search(pattern, str(item))
-                tmp = str(img_src.group()).replace('src=\"', '')
-                img_url.append(tmp)
-            except AttributeError:
-                pass
+                try:
+                    pattern = 'readonly="">magnet.*?</textarea>'
 
-        args = []
-        with ThreadPoolExecutor(20) as executor:
-            for item in img_url:
-                args.append([item, title])
-            executor.map(download, args)
+                    magnet = re.search(pattern, str(soup.select('textarea')))
 
-        # for item in img_url:
-        #     args = [item, title]
-        #     t = threading.Thread(target=download, args=args)
-        #     t.start()
-        #     t.join()
+                    seed = magnet.group().replace('readonly="">', '').replace('</textarea>', '')
 
-
-def download(args_list):
-    img_url = args_list[0]
-    title = args_list[1]
-    filename = str(img_url).split('/')[-1]
-    print img_url, filename
-    path = '/media/stan/Ubuntu/girl_multi_thread/' + title
-    if not os.path.exists(path):
-        os.mkdir(path)
-    elif os.path.exists(path + '/' + str(filename)):
-        print 'file exists, return'
-        return
-
-    try:
-        response = requests.get(img_url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            print 'path, filename', path, str(filename)
-            with open('%s/%s' % (path, str(filename)), 'wb') as f:
-                f.write(response.content)
-                f.close()
-                print 'write ok!'
-    except BaseException:
-        print 'we have a bad url', img_url
-        return 'ERR'
+                    post = {
+                        'title': link['title'],
+                        'magnet': seed,
+                        'size': link['size']
+                    }
+                    print 'title', link['title'], 'magnet', seed, 'size', link['size']
+                    if not self.seed.find_one({'magnet': seed}):
+                        self.seed.save(post)
+                        print 'save to mongodb success!'
+                    else:
+                        print 'sublink exists, pass!'
+                except AttributeError:
+                    print 'we have a AttributeError, pass'
+        except RequestException as e:
+            print e.message
 
 
 if __name__ == '__main__':
-    start = time.time()
+    reload(sys)
+    sys.setdefaultencoding('utf-8')
+    s = Spider()
+    if s.get_html(s.base_url):
+        s.get_sublink(s.get_html(s.base_url))
 
-    for i in range(1, 100):
-        getimglink(getsublink(base_url + str(i)))
-    end = time.time()
-    print end - start
+    for i in s.link.find():
+        if not s.seed.find_one({'title': i['title']}):
+            s.get_magnet(i)
+            time.sleep(3)
+        else:
+            print 'link already crawled, getting next.'
+
